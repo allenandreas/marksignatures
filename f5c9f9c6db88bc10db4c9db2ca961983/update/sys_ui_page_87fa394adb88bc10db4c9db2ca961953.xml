@@ -1,0 +1,777 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_ui_page">
+    <sys_ui_page action="INSERT_OR_UPDATE">
+        <category>general</category>
+        <client_script><![CDATA[PDFJS.workerSrc = 'scripts/pdf.worker.js';
+PDFJS.disableStream = true;
+$j('#pdf_container').append('<div id="loading-setup"><div id="loading-icon"><i class="icon-loading"></i></div><div>${gs.getMessage("Loading file...")}</div></div>');
+var pdfTemplateSysId = document.getElementById('pdf_revision_sysid').value;
+var pageNumber = 1;
+var numPages = 0;
+var pdfDoc = null;
+var renderTask;
+var captureEnabled = false;
+var canvasHeight;
+var canvasWidth;
+$j('#current_page').val(pageNumber);
+var coords = [];
+var canvas = $j('#doc_canvas')[0];
+var sigList;
+var count = 0;
+var messages = {
+    'page': getMessage('Page')
+};
+
+var clearDocTempMap = function() {
+    return {
+        pdfDocumentRevisionSysId: pdfTemplateSysId,
+        boxHeight: '',
+        boxWidth: '',
+        docTop: '',
+        docLeft: '',
+        signTop: '',
+        signLeft: '',
+        pageNumber: ''
+    };
+};
+
+var currentDocumentTemplate = clearDocTempMap();
+
+function loadMapList() {
+    var sigs = new GlideAjax('retrieveSigs');
+    sigs.addParam('sysparm_name', 'populateList');
+    sigs.addParam('sysparm_id', '779ae3ea2f8b20503c70de1a2799b6a8');
+    sigs.getXMLAnswer(function(response) {
+        sigList = JSON.parse(response);
+
+        var mapping_list_item;
+        var mapping_list = $j('#mapping-list');
+        mapping_list.empty();
+
+        sigList.sort(function(m1, m2) {
+            if (m1.pdf_page < m2.pdf_page)
+                return -1;
+            if (m1.pdf_page > m2.pdf_page)
+                return 1;
+            return 0;
+        });
+
+        for (var i = 0; i < sigList.length; i++) {
+            var currentAdd = sigList[i];
+            if (coordCheck(currentAdd)) {
+                mapping_list_item = buildSigList(currentAdd);
+                $j('#mapping-list').append(mapping_list_item);
+            }
+        }
+        return sigList;
+    });
+}
+
+loadMapList();
+
+function renderCapturedSigs() {
+    var loadSig = new GlideAjax('retrieveSigs');
+    loadSig.addParam('sysparm_name', 'loadSigs');
+    //loadSig.addParam('sysparm_docRevId', pdfTemplateSysId);
+
+    loadSig.getXMLAnswer(function(response) {
+        coords = JSON.parse(response);
+        if (coords) {
+            $j('.canvas-mapping').remove();
+            for (var i = 0; i < coords.length; i++) {
+                var currentAdd = coords[i];
+                if (coordCheck(currentAdd) && (parseInt(currentAdd.page_number) == (pageNumber))) {
+                    $j('#doc_container').append(buildCanvasMap(currentAdd));
+                } 
+            }
+        }
+    });
+}
+
+function resetTempMap() {
+    $j('.notification-container').hide();
+}
+
+PDFJS.getDocument('$[HTML:jvar_pdfUrl]').then(function(pdf) {
+    pageNumber = 1;
+    numPages = pdf.numPages;
+    pdfDoc = pdf;
+    pdf.getPage(pageNumber).then(processPages);
+    renderCapturedSigs(); //pass template ID here
+});
+
+$j('#first_page').on('click', function() {
+    var currentVal = Math.min(1, numPages);
+    if (currentVal == 1 && currentVal != pageNumber)
+        pdfDoc.getPage(currentVal).then(processPages);
+
+    pageNumber = currentVal;
+    $j('#current_page').val(currentVal);
+});
+
+$j('#last_page').on('click', function() {
+    if (numPages >= 1 && numPages != pageNumber)
+        pdfDoc.getPage(numPages).then(processPages);
+
+    pageNumber = numPages;
+    $j('#current_page').val(numPages);
+});
+
+$j('body').on('mouseover', '.mapping-list-item', function() {
+    var data = $j(this).data();
+    var id = data.id;
+
+    $j('.mapping-list-item').removeClass('lighter-active');
+    $j(this).addClass('lighter-active');
+    var relatedMapping = $j('div[id$="' + id + '"]');
+    if (relatedMapping) {
+        relatedMapping.addClass('canvas-mapping-toggle');
+    }
+});
+
+$j('body').on('mouseout', '.mapping-list-item', function() {
+    var data = $j(this).data();
+    var id = data.id;
+    var relatedMapping = $j('div[id$="' + id + '"]');
+    $j(this).removeClass('lighter-active');
+
+    if (relatedMapping) {
+        relatedMapping.removeClass('canvas-mapping-toggle');
+    }
+});
+
+$j('body').on('mouseover', 'div.canvas-mapping', function() {
+    var data = $j(this).data();
+    var id = data.id;
+    $j(this).addClass('canvas-mapping-toggle');
+    $j('.mapping-list-item').removeClass('lighter-active');
+    $j('.mapping-list-item[data-id$="' + id + '"]').addClass('lighter-active');
+
+});
+
+$j('body').on('mouseout', 'div.canvas-mapping', function() {
+    var data = $j(this).data();
+    var id = data.id;
+    $j(this).removeClass('canvas-mapping-toggle');
+    $j('.mapping-list-item').removeClass('lighter-active');
+
+
+});
+
+$j('body').on('click', 'a[id^="remove-mapping-"]', function(e) {
+    var data = $j(this).data();
+    var id = data.sysId;
+    var deleteSig = new GlideAjax('retrieveSigs');
+    deleteSig.addParam('sysparm_name', 'removeSig');
+    deleteSig.addParam('sysparm_id', id);
+    deleteSig.getXMLAnswer(function(response) {
+        var deleteAction = response;
+        if (deleteAction) {
+            var el = document.getElementById(id);
+            el.remove();
+        }
+    });
+    $j('.canvas-mapping').each(function(index, value) {
+        var data = $j(this).data();
+        if (data.id == id) {
+            $j(this).remove();
+        }
+    });
+    e.stopImmediatePropagation();
+    e.preventDefault();
+});
+
+$j("#navbar_prev").click(function() {
+    clearDocTempMap();
+    if (pageNumber > 1) {
+        pageNumber--;
+        loadMapList(pdfTemplateSysId);
+        pdfDoc.getPage(pageNumber).then(processPages);
+    }
+    $j('#current_page').val(pageNumber);
+});
+
+$j("#navbar_next").click(function() {
+    clearDocTempMap();
+    if (pageNumber < pdfDoc.numPages) {
+        pageNumber++;
+        loadMapList(pdfTemplateSysId);
+        pdfDoc.getPage(pageNumber).then(processPages);
+    }
+    $j('#current_page').val(pageNumber);
+});
+
+var startX,
+    startY,
+    $selectionMarquee = $j('#doc_header'),
+    positionBox = function($box, coordinates) {
+        var canvasOffset = $j("#doc_canvas").offset();
+
+        $box.css(
+            'top', coordinates.top - canvasOffset.top + 5
+        ).css(
+            'left', coordinates.left - canvasOffset.left + 268
+        ).css(
+            'height', (coordinates.bottom) - (coordinates.top)
+        ).css(
+            'width', (coordinates.right) - (coordinates.left)
+        );
+    },
+    compareNumbers = function(a, b) {
+        return a - b;
+    },
+    getBoxCoordinates = function(startX, startY, endX, endY) {
+        var x = [startX, endX].sort(compareNumbers);
+        var y = [startY, endY].sort(compareNumbers);
+
+        return {
+            top: y[0],
+            left: x[0],
+            right: x[1],
+            bottom: y[1]
+        };
+    },
+    followMouse = function(event) {
+        var pos = $selectionMarquee.position();
+        var position = getBoxCoordinates(startX, startY,
+            event.pageX, event.pageY);
+
+        positionBox($selectionMarquee, position);
+    };
+
+$j('#doc_canvas').on('mousedown', function(event) {
+    if (captureEnabled) {
+        startX = event.pageX;
+        startY = event.pageY;
+        positionBox($selectionMarquee,
+            getBoxCoordinates(startX, startY, startX, startY));
+        $selectionMarquee.show();
+        $j('#doc_canvas').on('mousemove', followMouse);
+    }
+});
+
+$j('#cancel-sig-map').on('click', function() {
+    captureEnabled = false;
+    $j('#doc_canvas').css('cursor', 'default');
+    $j('#add-map').hide();
+    $j('#mapping-list').removeClass('compress');
+    $j('#add-sig-btn').removeClass('disabled');
+    $j('#save-success-msg').hide();
+    $j('.notification-error').hide();
+    currentDocumentTemplate = clearDocTempMap();
+    $j('.temp-selection').remove();
+});
+
+$j('#doc_canvas').on('mouseup', function(event) {
+    if (captureEnabled) {
+        var position, $selectedBox;
+        var testBox = $selectionMarquee.clone();
+        var coordinates = $selectionMarquee.offset();
+        var canvasOffset = $j("#doc_canvas").offset();
+        testBox.css(
+            'top', coordinates.top - canvasOffset.top
+        ).css(
+            'left', coordinates.left - canvasOffset.left + 15
+        ).css(
+            'height', (coordinates.bottom) - (coordinates.top)
+        ).css(
+            'width', (coordinates.right) - (coordinates.left)
+        );
+        testBox.addClass('temp-selection');
+        testBox.appendTo('#doc_container');
+
+        $selectionMarquee.hide();
+
+        var headerT = $j('#doc_header');
+        var docTop = $j('#doc_canvas').height();
+        var docLeft = $j('#doc_canvas').width();
+        var signTop = headerT.css('top');
+        var signLeft = headerT.css('left');
+        var boxHeight = headerT.css('height');
+        var boxWidth = headerT.css('width');
+
+        position = getBoxCoordinates(startX, startY, event.pageX, event.pageY);
+
+        if (position.left !== position.right && position.top !== position.bottom) {
+
+            $selectedBox = $j('<div class="selected-box"></div>');
+            $selectedBox.hide();
+
+            $j('body').append($selectedBox);
+
+            positionBox($selectedBox, position);
+        }
+
+        currentDocumentTemplate.docTop = docTop;
+        currentDocumentTemplate.docLeft = docLeft;
+        currentDocumentTemplate.signTop = signTop.replace('px', '');
+        currentDocumentTemplate.signLeft = signLeft.replace('px', '');
+        currentDocumentTemplate.boxHeight = boxHeight.replace('px', '');
+        currentDocumentTemplate.boxWidth = boxWidth.replace('px', '');
+        currentDocumentTemplate.pageNumber = pageNumber;
+        $j('#add-map').show();
+        $j('#add-field-btn').addClass('disabled');
+        $j('#mouse-cursor-message').hide();
+        $j('#mapping-list').addClass('compress');
+    }
+});
+
+$j('#add-sig-btn').on('click', function() {
+    resetTempMap();
+    captureEnabled = true;
+    $j('#doc_canvas').css('cursor', 'crosshair');
+    var $message = $j('#mouse-cursor-message');
+    if (!$message.is(':visible')) {
+        $message.show();
+    }
+});
+
+$j('body').on('click', '#save-sig-map', function(e) {
+    var fieldName = $j('#field_name').val().trim();
+    var fieldMapping = $j('#field_mapping').val().trim();
+    $j('.notification-error').hide();
+    if (fieldName && fieldMapping) {
+        $j.when(saveSignature(currentDocumentTemplate)).done(function() {
+            setTimeout(function() {
+                loadMapList(); //pass template ID here
+                renderCapturedSigs(); //pass template ID here
+                currentDocumentTemplate = clearDocTempMap();
+            }, 500);
+            $j('#field_name').val('');
+            $j('#field_mapping').val('');
+            fieldMapping = "";
+            $j('#save-success-msg').show();
+            $j('#add-sig-btn').removeClass('disabled');
+            $j('#mapping-list').removeClass('compress');
+            $j('#doc_canvas').css('cursor', 'default');
+            $j('#add-map').hide();
+            captureEnabled = false;
+            $j('.temp-selection').remove();
+        });
+    }
+    e.preventDefault();
+    e.stopImmediatePropagation();
+});
+
+function buildCanvasMap(currentMap) {
+    var canvasOffset = $j('#doc_canvas').offset();
+    var w = parseInt(currentMap.box_width);
+    var h = parseInt(currentMap.box_height);
+    var left = parseInt(currentMap.sign_left) + canvas.offsetLeft - 15;
+    var top = parseInt(currentMap.sign_top) + canvas.offsetTop;
+	var p = parseInt(currentMap.pdf_page);
+    return '<div' +
+        ' id=area-' + currentMap.sys_id +
+        ' class="canvas-mapping" ' +
+        ' data-id=' + currentMap.sys_id +
+        ' data-page-number=' + p +
+        ' data-label="' + currentMap.name + '"' +
+        ' data-mapping="mappedField"' +
+        ' style="' +
+        'top:' + top +
+        'px;left:' + left +
+        'px;width:' + w +
+        'px;height:' + h +
+        'px"></div>';
+}
+
+function coordCheck(currentMap) {
+    return currentMap.name && currentMap.sys_id;
+}
+
+function processPages(page) {
+    if (renderTask) {
+        renderTask.cancel();
+    }
+    var scale = 3;
+    var viewport = page.getViewport(scale);
+    var canvas = document.getElementById('doc_canvas');
+    var context = canvas.getContext('2d');
+
+    var renderContext = {
+        canvasContext: context,
+        viewport: viewport,
+        continueCallback: function(cont) {
+            $j('#doc_canvas').css('visibility', 'visible');
+            $j('#nav_bar').css('visibility', 'visible');
+            $j('#close_button').css('visibility', 'visible');
+            cont();
+        }
+    };
+    canvas.height = viewport.height;
+    canvas.width = viewport.width;
+    canvasHeight = canvas.height;
+    canvasWidth = canvas.width;
+    renderTask = page.render(renderContext);
+    $j('#loading-setup').css('visibility', 'hidden');
+
+    renderTask.promise.then(function() {
+        renderCapturedSigs();
+        $j('#page_count').text(numPages);
+    }, function(noReason) {
+        //ignore
+    });
+}
+
+function saveSignature(docTempMap) {
+    var addItem = new GlideAjax('retrieveSigs');
+    addItem.addParam('sysparm_name', 'addSig');
+    addItem.addParam('sysparm_id', '779ae3ea2f8b20503c70de1a2799b6a8'); //use template id
+    addItem.addParam('sysparm_docTop', docTempMap.docTop);
+    addItem.addParam('sysparm_docLeft', docTempMap.docLeft);
+    addItem.addParam('sysparm_signTop', docTempMap.signTop);
+    addItem.addParam('sysparm_signLeft', docTempMap.signLeft);
+    addItem.addParam('sysparm_pageNumber', docTempMap.pageNumber);
+    addItem.addParam('sysparm_boxHeight', docTempMap.boxHeight);
+    addItem.addParam('sysparm_boxWidth', docTempMap.boxWidth);
+	addItem.addParam('sysparm_documentField', document.getElementById('field_name').value);
+    addItem.getXMLAnswer(function(response) {
+        if (response) {
+            return response;
+        }
+        return false;
+    });
+    return false;
+}
+
+function buildSigList(obj) {
+    return ['<li class="mapping-list-item list-group-item" data-page-number="' + obj.pdf_page + '"data-id="' + obj.sys_id + '" id="' + obj.sys_id + '">',
+        '<a href="#" class="link-unstyled" data-id="map-' + obj.sys_id,
+        ' id="remove-' + obj.sys_id + '" ',
+        ' data-label="' + obj.name + '" ',
+        ' data-page-number="' + obj.pdf_page + '" ',
+        '>',
+        '<p class="field-label">',
+        '<strong>' + obj.name + '</strong>',
+        '</p>',
+        '<p>',
+        '<small>' + messages['page'] + ' ',
+        obj.pdf_page,
+        '</small>',
+        '</p>',
+        '</a>',
+        ' <a href="#" id="remove-mapping-' + obj.sys_id + '" data-sys-id="' + obj.sys_id + '" class="remove-map link-unstyled" data-toggle="tooltip" title="${gs.getMessage("Remove mapping")}" data-page-number=' + obj.pdf_page + ' data-label="' + obj.name + '">',
+        '<i class="align-right icon-delete">',
+        '</i>',
+        '</a>',
+        '</li>'
+    ].join('');
+}]]></client_script>
+        <description/>
+        <direct>false</direct>
+        <endpoint/>
+        <html><![CDATA[<?xml version="1.0" encoding="utf-8" ?>
+<j:jelly trim="false" xmlns:j="jelly:core" xmlns:g="glide" xmlns:j2="null" xmlns:g2="null">
+	<g:requires name="scripts/pdf.js" includes="true" />
+	<g:requires name="scripts/pdf.worker.js" includes="true" />
+	<!-- <j:set var="jvar_mapping_field" value="${sysparm_table}" /> -->
+	<j:set var="jvar_mapping_field" value="question" />
+	<style>
+			#doc_canvas {
+				width:100%;
+				height:100%;
+				top:0;
+				left:0;
+				border: 1px solid black;
+				padding-right: 2px;
+				visibility: hidden;
+			}
+			#doc_container {
+				padding-right: 0;
+				min-width: 628.5px;
+				width: 628.5px;
+				min-height: 878px;
+				height: 878px;
+			}
+			#close_button {
+				visibility: hidden;
+			}
+			#nav_bar {
+				text-align : center;
+				visibility: hidden;
+			}
+			body {
+				-webkit-touch-callout: none;
+				-webkit-user-select: none;
+				-khtml-user-select: none;
+				-moz-user-select: none;
+				-ms-user-select: none;
+				user-select: none;
+			}
+			#doc_header {
+				top:0;
+				left: 0;
+				height:0px;
+				width:0px;
+				z-position: 1000;
+				position: absolute;
+				background-color: rgba(130,239,188, 0.8);
+				opacity: 0.8;
+				display: block;
+				border: none;
+			}
+			 #mapping-list {
+				overflow-y: auto;
+				width: 215px;
+				height: 680px;
+				margin-top: 15px;
+				margin-bottom: 0;
+			}
+			.compress {
+				max-height: 380px;
+			}
+			.mapping-list {
+				margin-top:0px;
+			}
+			.selected {
+				border-left: 5px solid rgba(130,239,188, 0.7) !important;
+			}
+			.mapping-list-item {
+				border-left: 5px solid #bdc0c4 !important;
+				border: 1px solid #bdc0c4;
+			}
+			.mapping-list-item:hover {
+				background-color: #f7f7f7;
+				border: 1px solid #17b56b;
+				border-left: 5px solid #61eaaa !important;
+			}
+			.mapping-list-item p {
+				margin-bottom: 0;
+			}
+			.mapping-list-item:hover .remove-map {
+				display:block !important;
+			}
+			.field-label, .mapped-to {
+				width: 80%;
+				overflow-wrap: break-word;
+				word-wrap: break-word;
+			}
+			.remove-map {
+				color: #343d47;
+				background-color: #f7f7f7;
+				text-decoration: inherit;
+				position: absolute;
+				top: 7px;
+				right: 7px;
+				padding: 3px 9px;
+				border: none;
+				display: none;
+			}
+			.remove-map:hover {
+				border: none;
+				border-radius: 3px;
+				background-color: #82EFBC;
+				display:block !important;
+			}
+			.nopadding {
+				padding: 0 !important;
+				margin: 0 !important;
+			}
+			.map-info {
+				font-size: 92%
+			}
+			.align-right {
+				float: right;
+			}
+			#add-map {
+				display: none;
+				padding: 15px 0;
+			}
+			#sidenavbar {
+				max-height: 100%;
+				height: 100%;
+			}
+			#field_tree {
+				max-height: 140px;
+				height: auto;
+				overflow-y: auto;
+			}
+			.notification-container {
+				clear: right;
+				padding: 15px 15px 6px 15px;
+				text-align: center;
+				margin: 15px 0;
+				font-size:13px;
+				border-radius: 3px;
+				clear: right;
+				border: 1px solid;
+			}
+			#mouse-cursor-message {
+				display:none;
+				margin-bottom: 10px;
+			}
+			#save-success-msg {
+				text-align: center;
+				vertical-align:middle;
+				display: none;
+			}
+			#error-saving-field-name-message {
+				text-align: center;
+				vertical-align:middle;
+				display: none;
+			}
+			#error-saving-field-mapping-message {
+				text-align: center;
+				vertical-align:middle;
+				display: none;
+			}
+			#error-saving-field-name-and-mapping-message {
+				text-align: center;
+				vertical-align:middle;
+				display: none;
+			}
+			.canvas-mapping {
+				z-position: 1000;
+				position: absolute;
+				background-color: rgba(130,239,188, 0.7);
+				display: block;
+				border: none;
+			}
+			.canvas-mapping-toggle {
+				border: 2px solid #17b56b;
+			}
+			.link-unstyled {
+				color: $color-darkest;
+				text-decoration: inherit;
+			}
+			.link-unstyled:link {
+				color: inherit;
+				text-decoration: inherit;
+			}
+			.link-unstyled:hover {
+				color: inherit;
+				text-decoration: inherit;
+			}
+			#add-sig-action {
+				margin-top: 15px;
+			}
+			.list-group-item {
+				border-radius: 3px;
+				margin-bottom: 3px;
+			}
+			#save-sig-map {
+				margin-left:8px;
+			}
+			.dark-text {
+				color: #81878E;
+				text-decoration: inherit;
+			}
+			.base-class-asterisk {
+				margin-right: 3px;
+				margin-left: 1px;
+				color: #81878E;
+			}
+			.red {
+				color: #f95050;
+			}
+			.required-input {
+				border-color: #f95050;
+			}
+			.lighter-active {
+				background-color: #f7f7f7;
+				border: 1px solid #17b56b;
+				border-left: 5px solid #61eaaa !important;
+			}
+		</style>
+		<div class="hr_task_attachment" style="display:table;">
+		<g2:evaluate var="jvar_pdfUrl" jelly="true">
+			jvar_pdfUrl = "sys_attachment.do?sys_id=abbfca922f4bec103c70de1a2799b681";
+		</g2:evaluate>
+			<div id="sidenavbar" class="col-md-3 nopadding">
+				<div id="instruction-message" class="instruction-success">
+					<p>${gs.getMessage('Click on the Capture Signature button to create a mapped signature')}</p>
+				</div>
+				<div id="add-field" class="block-element">
+					<button id="add-sig-btn" class="btn btn-primary align-right">${gs.getMessage('Capture Signature')}</button>
+				</div>
+				<div class="clearfix">
+				</div>
+				<div id="mouse-cursor-message" class="notification-info notification-container">
+					<p>${gs.getMessage('Drag mouse to indicate signature capture area')}</p>
+				</div>
+				<div id="save-success-msg" class="notification-success notification-container">
+				<p>${gs.getMessage('Signature captured!')}</p>
+				</div>
+				<div id="add-map" class="block-element field_picker_module form-group has-error error">
+						<p>
+							<label for="field_name" class="control-label">
+								<span id="field_name_asterisk" class="base-class-asterisk icon-required required-asterisk"></span>
+								${gs.getMessage('Name')}
+							</label>
+							<input id="field_name" type="text" rows="1" class="form-control" />
+						</p>
+						<br/>
+						<p>
+							<label for="field_mapping" class="control-label">
+								<span id="field_mapping_asterisk" class="base-class-asterisk icon-required required-asterisk"></span>
+								${gs.getMessage('Mapping')}
+							</label>
+						</p>
+						<p class="dark-text">${gs.getMessage('Select field or enter it below')}</p>
+						<g:macro_invoke macro="AA Field Map" table="${jvar_mapping_field}" field_type="reference" tinymce="false" target="field_mapping" selection_type="sys_user" />
+						<br/>
+						<input id="field_mapping" type="text" class="form-control" />
+						<div id="add-sig-action" class="btn-toolbar">
+							<button id="save-sig-map" class="btn btn-primary align-right">
+								${gs.getMessage('Save Signature')}
+							</button>
+							<button id="cancel-sig-map" class="btn btn-default align-right">${gs.getMessage('Cancel')}</button>
+						</div>
+				</div>
+				<ul id="mapping-list" class="list-group block-element"></ul>
+				<div class="clearfix"></div>
+			</div>
+		<div id="doc_container" class="col-md-9">
+			<div>
+				<canvas id="doc_canvas"></canvas>
+				<input type="hidden" id="attachment_sysid" name="attachment_sys_id" value="abbfca922f4bec103c70de1a2799b681"></input>
+				<input type="hidden" id="pdf_revision_sysid" name="pdf_revision_sysid" value="abbfca922f4bec103c70de1a2799b681"></input>
+				<input type="hidden" id="doc_revision_sysid" name="doc_revision_sysid" value="abbfca922f4bec103c70de1a2799b681"></input>
+			</div>
+			<div>
+				<div id="nav_bar">
+					<button id="first_page" name="vcr_first" class="btn btn-icon list_nav" style="font-size: 13px !important">
+						<span class="icon-vcr-left"/>
+						<span class="icon-vcr-left"/>
+					</button>
+					<button name="vcr_back" id="navbar_prev" class="btn btn-icon list_nav" style="font-size: 13px !important">
+						<span class="icon-vcr-left"/>
+					</button>
+					<div class="vcr_controls">
+						<input style="height:21px; display:inline; width:45px; border-radius:3px; border:1px solid #AAA; text-align:right; padding:0 5px;" id="current_page"/>
+						<span class="list_row_number_input" style="margin-left:7px;">
+							${gs.getMessage('of')}
+							<span style="margin-left:5px;" id="page_count"></span>
+						</span>
+					</div>
+					<button name="vcr_next" id="navbar_next" class="btn btn-icon list_nav" style="font-size: 13px !important">
+						<span class="icon-vcr-right"/>
+					</button>
+					<button id="last_page" name="vcr_next" class="btn btn-icon list_nav" style="font-size: 13px !important">
+						<span class="icon-vcr-right"/>
+						<span class="icon-vcr-right"/>
+					</button>
+				</div>
+				<button id="close_button" class="btn btn-default align-right" onClick="return closeModal();">
+					${gs.getMessage('Close')}
+				</button>
+			</div>
+		</div>
+		<div id="doc_header"></div>
+	</div>
+</j:jelly>]]></html>
+        <name>allen_mark_signatures</name>
+        <processing_script/>
+        <sys_class_name>sys_ui_page</sys_class_name>
+        <sys_created_by>aandrea</sys_created_by>
+        <sys_created_on>2021-05-12 13:37:48</sys_created_on>
+        <sys_id>87fa394adb88bc10db4c9db2ca961953</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>allen_mark_signatures</sys_name>
+        <sys_package display_value="Signatures" source="f5c9f9c6db88bc10db4c9db2ca961983">f5c9f9c6db88bc10db4c9db2ca961983</sys_package>
+        <sys_policy/>
+        <sys_scope display_value="Signatures">f5c9f9c6db88bc10db4c9db2ca961983</sys_scope>
+        <sys_update_name>sys_ui_page_87fa394adb88bc10db4c9db2ca961953</sys_update_name>
+        <sys_updated_by>aandrea</sys_updated_by>
+        <sys_updated_on>2021-05-12 13:37:48</sys_updated_on>
+    </sys_ui_page>
+</record_update>
